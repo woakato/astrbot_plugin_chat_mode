@@ -17,12 +17,17 @@ other across three channels:
    stored in global memories does not bleed into daily chat.
 """
 
+import asyncio
+import importlib
+import random
 import re
+import time
 from collections.abc import AsyncGenerator
 
 from astrbot.api import AstrBotConfig, logger
-from astrbot.api.event import AstrMessageEvent, MessageEventResult, filter
-from astrbot.api.provider import ProviderRequest
+from astrbot.api.event import AstrMessageEvent, MessageChain, MessageEventResult, filter
+from astrbot.api.message_components import Image
+from astrbot.api.provider import LLMResponse, ProviderRequest
 from astrbot.api.star import Context, Star
 from astrbot.core.star.filter.command import GreedyStr
 
@@ -57,6 +62,8 @@ class ChatModePlugin(Star):
         self.config = config or {}
         # Per-session mode state cache, write-through to the plugin KV store.
         self._states: dict[str, dict] = {}
+        # Per-session timestamp of the last RP illustration, for cooldown.
+        self._image_last_ts: dict[str, float] = {}
 
     # ==================== state persistence ====================
 
@@ -237,6 +244,137 @@ class ChatModePlugin(Star):
                 self._sanitize_memory_injection(req, umo)
         except Exception:
             logger.error("chat-mode decoration failed", exc_info=True)
+
+    # ==================== RP illustration (NAI integration) ====================
+
+    def _nai_api(self):
+        """Resolve the NAI image plugin's companion extension API, if installed."""
+        for module_name in (
+            "data.plugins.astrbot_plugin_nai_image.main",
+            "astrbot_plugin_nai_image.main",
+        ):
+            try:
+                module = importlib.import_module(module_name)
+                getter = getattr(module, "get_nai_image_api", None)
+                api = getter() if callable(getter) else None
+                if api is not None:
+                    return api
+            except Exception:
+                continue
+        try:
+            metadata = self.context.get_registered_star("astrbot_plugin_nai_image")
+            instance = getattr(metadata, "star_cls", None)
+            return getattr(instance, "extension_api", None)
+        except Exception:
+            return None
+
+    @filter.on_llm_response()
+    async def maybe_rp_illustration(
+        self, event: AstrMessageEvent, resp: LLMResponse
+    ) -> None:
+        """Probabilistically illustrate an RP turn via the NAI image plugin."""
+        try:
+            if not self.config.get("rp_image_enabled", True):
+                return
+            probability = float(self.config.get("rp_image_probability", 0.2) or 0)
+            if probability <= 0:
+                return
+            umo = event.unified_msg_origin
+            state = await self._get_state(umo)
+            if state.get("mode") != MODE_RP:
+                return
+            reply_text = (resp.completion_text or "").strip() if resp else ""
+            if not reply_text:
+                return
+            cooldown = max(0, int(self.config.get("rp_image_cooldown", 300) or 0))
+            now = time.time()
+            if now - self._image_last_ts.get(umo, 0.0) < cooldown:
+                return
+            if random.random() >= probability:
+                return
+            self._image_last_ts[umo] = now
+            scene = str(state.get("scene") or "").strip()
+            user_text = event.get_message_str().strip()
+            asyncio.create_task(
+                self._generate_rp_illustration(event, umo, scene, user_text, reply_text)
+            )
+        except Exception:
+            logger.error("RP illustration scheduling failed", exc_info=True)
+
+    async def _generate_rp_illustration(
+        self,
+        event: AstrMessageEvent,
+        umo: str,
+        scene: str,
+        user_text: str,
+        reply_text: str,
+    ) -> None:
+        """Write an image prompt from the RP turn, generate via NAI, then send it.
+
+        Runs as a detached background task so the text reply is not delayed
+        by prompt writing or image generation.
+        """
+        try:
+            api = self._nai_api()
+            if api is None:
+                logger.info(
+                    f"[{umo}] NAI image plugin not available, skip RP illustration"
+                )
+                return
+            prompt = await self._compose_image_prompt(umo, scene, user_text, reply_text)
+            if not prompt:
+                return
+            result = await asyncio.wait_for(
+                api.generate_for_companion(
+                    self,
+                    {
+                        "prompt_text": prompt,
+                        "prompt_format": "natural_language",
+                        "workflow_kind": "rp_illustration",
+                        "session_key": umo,
+                    },
+                ),
+                timeout=240,
+            )
+            image_path = str((result or {}).get("image_path") or "")
+            if not image_path:
+                logger.info(
+                    f"[{umo}] RP illustration skipped: "
+                    f"{(result or {}).get('note', 'no image')}"
+                )
+                return
+            await event.send(MessageChain(chain=[Image.fromFileSystem(image_path)]))
+            logger.info(f"[{umo}] RP illustration sent | path={image_path}")
+        except Exception:
+            logger.error("RP illustration generation failed", exc_info=True)
+
+    async def _compose_image_prompt(
+        self, umo: str, scene: str, user_text: str, reply_text: str
+    ) -> str:
+        """Ask the current LLM to write an English image prompt for the RP turn."""
+        provider = self.context.get_using_provider(umo)
+        if provider is None:
+            logger.info(f"[{umo}] no LLM provider available, skip RP illustration")
+            return ""
+        system_prompt = (
+            "你是文生图提示词助手。根据给定的角色扮演片段，写一条英文自然语言生图提示词，"
+            "描绘这一幕的画面：人物外貌与状态、动作与表情、场景环境与氛围。"
+            "直接输出提示词本身，10 到 40 个英文单词，不要解释、引号或任何前缀，"
+            "内容保持安全适宜。"
+        )
+        lines = [f"场景设定：{scene or '未设定'}"]
+        if user_text:
+            lines.append(f"用户这一轮：{user_text[:300]}")
+        if reply_text:
+            lines.append(f"角色回复：{reply_text[:500]}")
+        extra = str(self.config.get("rp_image_prompt_extra", "")).strip()
+        if extra:
+            lines.append(f"附加要求：{extra}")
+        resp = await asyncio.wait_for(
+            provider.text_chat(prompt="\n".join(lines), system_prompt=system_prompt),
+            timeout=60,
+        )
+        return (resp.completion_text or "").strip().strip('"“”‘’')[:600]
 
     # ==================== commands ====================
 

@@ -1,5 +1,5 @@
 name: astrbot_plugin_chat_mode
 author: woakato
-version: 1.0.0
-description: 日常聊天 / 实景角色扮演双模式切换。按会话切换表达方式（括号动作解锁或禁用），隔离两种模式的对话历史，并清洗长期记忆召回中的括号动作风格，防止两种模式的表达方式互相串味。
+version: 1.1.0
+description: 日常聊天 / 实景角色扮演双模式切换。按会话切换表达方式（括号动作解锁或禁用），隔离两种模式的对话历史，并清洗长期记忆召回中的括号动作风格，防止两种模式的表达方式互相串味。RP 模式下可按概率联动 NAI 生图插件生成场景插图。
 repo: https://github.com/woakato/astrbot_plugin_chat_mode

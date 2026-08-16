@@ -34,5 +34,29 @@
         "hint": "开启后，只有管理员可以执行 /rp on、/rp off 切换模式，避免群聊中被他人误切换。",
         "type": "bool",
         "default": false
+    },
+    "rp_image_enabled": {
+        "description": "RP 模式场景插图",
+        "hint": "角色扮演模式下，每轮对话按概率联动 NAI 生图插件（astrbot_plugin_nai_image）生成场景插图：由当前模型根据场景设定与双方动作描写自动撰写英文提示词后生图发送。未安装 NAI 插件时自动跳过。",
+        "type": "bool",
+        "default": true
+    },
+    "rp_image_probability": {
+        "description": "插图触发概率",
+        "hint": "RP 模式下每轮对话触发生图的概率，取值 0~1，例如 0.2 表示每轮 20% 概率。",
+        "type": "float",
+        "default": 0.2
+    },
+    "rp_image_cooldown": {
+        "description": "插图冷却时间（秒）",
+        "hint": "同一会话两次场景插图的最小间隔秒数，防止连续刷图。",
+        "type": "int",
+        "default": 300
+    },
+    "rp_image_prompt_extra": {
+        "description": "提示词附加要求",
+        "hint": "撰写生图提示词时附加的固定要求，例如统一画风：anime style, soft lighting, cinematic composition。",
+        "type": "text",
+        "default": ""
     }
 }
