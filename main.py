@@ -286,11 +286,9 @@ class ChatModePlugin(Star):
         state["scene"] = scene
         await self._save_state(umo, state)
 
-        msg = "已进入实景角色扮演模式：括号动作描写已解锁，日常聊天的表达限制在本模式中不生效。"
-        if self.config.get("isolate_conversation", True):
-            msg += "\n剧情将记录在独立对话中，不会混入日常聊天上下文。"
+        msg = "已进入角色扮演模式。"
         if scene:
-            msg += f"\n当前场景：{scene}"
+            msg += f" 场景：{scene}"
         yield event.plain_result(msg)
 
     @rp_group.command("off", alias={"关闭", "结束", "退出"})
@@ -328,12 +326,7 @@ class ChatModePlugin(Star):
         state["scene"] = ""
         await self._save_state(umo, state)
 
-        msg = "已回到日常聊天模式：人设的说话方式限制恢复生效。"
-        if self.config.get("isolate_conversation", True):
-            msg += (
-                "\n已切回日常对话，角色扮演剧情保留在独立对话中，随时可用 /rp on 继续。"
-            )
-        yield event.plain_result(msg)
+        yield event.plain_result("已回到日常聊天模式。")
 
     @rp_group.command("status", alias={"状态"})
     async def rp_status(
