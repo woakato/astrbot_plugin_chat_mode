@@ -134,6 +134,8 @@ class ChatModePlugin(Star):
         self._states: dict[str, dict] = {}
         # Per-session timestamp of the last RP illustration, for cooldown.
         self._image_last_ts: dict[str, float] = {}
+        # Strong references to pending background illustration tasks to prevent GC.
+        self._bg_tasks: set[asyncio.Task] = set()
 
     # ==================== state persistence ====================
 
@@ -296,20 +298,14 @@ class ChatModePlugin(Star):
                     scene_block = f"# Current Scene / 当前场景设定\n{scene}"
                     block = f"{block}\n\n{scene_block}" if block else scene_block
                 if block:
-                    req.system_prompt = (
-                        f"{req.system_prompt.rstrip()}\n\n{block}"
-                        if req.system_prompt.strip()
-                        else block
-                    )
+                    orig_sp = (req.system_prompt or "").strip()
+                    req.system_prompt = f"{orig_sp}\n\n{block}" if orig_sp else block
                 return
 
             guard = str(self.config.get("normal_guard_prompt", "")).strip()
             if self.config.get("inject_normal_guard", True) and guard:
-                req.system_prompt = (
-                    f"{req.system_prompt.rstrip()}\n\n{guard}"
-                    if req.system_prompt.strip()
-                    else guard
-                )
+                orig_sp = (req.system_prompt or "").strip()
+                req.system_prompt = f"{orig_sp}\n\n{guard}" if orig_sp else guard
             if self.config.get("filter_memory_style", True):
                 self._sanitize_memory_injection(req, umo)
         except Exception:
@@ -365,9 +361,11 @@ class ChatModePlugin(Star):
             self._image_last_ts[umo] = now
             scene = str(state.get("scene") or "").strip()
             user_text = event.get_message_str().strip()
-            asyncio.create_task(
+            task = asyncio.create_task(
                 self._generate_rp_illustration(event, umo, scene, user_text, reply_text)
             )
+            self._bg_tasks.add(task)
+            task.add_done_callback(self._bg_tasks.discard)
         except Exception:
             logger.error("RP illustration scheduling failed", exc_info=True)
 
@@ -428,11 +426,8 @@ class ChatModePlugin(Star):
             return ""
         system_prompt = (
             f"{IMAGE_PROMPT_SPEC}\n\n"
-            "Output only English comma-separated drawing tags. Do not output prose, explanations, quotes, or prefixes. "
-            "你是文生图提示词助手。根据给定的角色扮演片段，写一条英文自然语言生图提示词，"
-            "描绘这一幕的画面：人物外貌与状态、动作与表情、场景环境与氛围。"
-            "直接输出提示词本身，10 到 40 个英文单词，不要解释、引号或任何前缀，"
-            "内容保持安全适宜。"
+            "你是文生图提示词助手。请根据给定的角色扮演片段，提炼并输出英文绘画标签（comma-separated tags）。\n"
+            "严格遵循上述 Tag 规范与核心一致性规范，仅输出逗号分隔的英文标签本身，不要输出任何解释、引号、前缀或多余内容，内容保持安全适宜。"
         )
         lines = [f"场景设定：{scene or '未设定'}"]
         if user_text:
