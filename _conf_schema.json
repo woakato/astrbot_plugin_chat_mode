@@ -53,6 +53,13 @@
         "type": "int",
         "default": 300
     },
+    "rp_image_prompt_provider_id": {
+        "description": "Tag 生成模型",
+        "hint": "指定用于提炼生图 Tag 的 LLM 模型 ID。留空则默认使用当前会话正在使用的模型。",
+        "type": "string",
+        "_special": "select_provider",
+        "default": ""
+    },
     "rp_image_prompt_extra": {
         "description": "提示词附加要求",
         "hint": "撰写生图提示词时附加的固定要求，例如统一画风：anime style, soft lighting, cinematic composition。",
