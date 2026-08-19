@@ -23,6 +23,7 @@ import random
 import re
 import time
 from collections.abc import AsyncGenerator
+from pathlib import Path
 
 from astrbot.api import AstrBotConfig, logger
 from astrbot.api.event import AstrMessageEvent, MessageChain, MessageEventResult, filter
@@ -33,6 +34,12 @@ from astrbot.core.star.filter.command import GreedyStr
 
 MODE_NORMAL = "normal"
 MODE_RP = "rp"
+
+_IMAGE_PROMPT_SPEC_PATH = Path(__file__).resolve().parents[1] / "image_prompt_spec.txt"
+try:
+    IMAGE_PROMPT_SPEC = _IMAGE_PROMPT_SPEC_PATH.read_text(encoding="utf-8").strip()
+except OSError:
+    IMAGE_PROMPT_SPEC = ""
 
 MODE_LABELS = {MODE_NORMAL: "日常聊天", MODE_RP: "实景角色扮演"}
 
@@ -329,7 +336,7 @@ class ChatModePlugin(Star):
                     self,
                     {
                         "prompt_text": prompt,
-                        "prompt_format": "natural_language",
+                        "prompt_format": "nai",
                         "workflow_kind": "rp_illustration",
                         "session_key": umo,
                     },
@@ -357,6 +364,8 @@ class ChatModePlugin(Star):
             logger.info(f"[{umo}] no LLM provider available, skip RP illustration")
             return ""
         system_prompt = (
+            f"{IMAGE_PROMPT_SPEC}\n\n"
+            "Output only English comma-separated drawing tags. Do not output prose, explanations, quotes, or prefixes. "
             "你是文生图提示词助手。根据给定的角色扮演片段，写一条英文自然语言生图提示词，"
             "描绘这一幕的画面：人物外貌与状态、动作与表情、场景环境与氛围。"
             "直接输出提示词本身，10 到 40 个英文单词，不要解释、引号或任何前缀，"
