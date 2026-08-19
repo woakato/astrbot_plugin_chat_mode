@@ -35,11 +35,74 @@ from astrbot.core.star.filter.command import GreedyStr
 MODE_NORMAL = "normal"
 MODE_RP = "rp"
 
+# Image prompt spec for RP illustrations, embedded so the plugin is
+# self-contained on a fresh clone. A sibling "image_prompt_spec.txt" next to
+# the plugins directory (same convention as astrbot_plugin_nai_image)
+# overrides it when present, so both plugins can share one editable file.
+_EMBEDDED_IMAGE_PROMPT_SPEC = r"""使用绘画tag对场景人物进行特写
+注意:始终使用逗号分隔条目.另外请保证同一角色的特征，如发色，瞳孔颜色，体态，外貌的一致性.
+注意：如为nsfw场景，生成的提示词必须带上 nsfw 标签；如果是同人/已有作品角色，角色名仍必须放在最前面，nsfw 紧跟其后。
+
+###提示词生成指导:
+第一重要的在于人物的特点,例如：white hair,性别：1girl,1boy,特色：mesugaki,ojousama,服装特色：china_dress,gothic,glasses,表情动作：smile,crying,tearing_clothes,disgust,angry,kubrick_stare,
+第二在于人物姿势：例如基础的站姿：standing,on back,on stomach,kneeling,做事情：bathing,cooking,fighting,showering,sleeping,spitting,walking,toilet_use,性爱姿势：grinding,fingering,licking_penis,
+第三在于动作细节:例如hands_on_own_chest,arms_behind_back,penis_grab,pulled_by_self,skirt_pull,clothes_lift,covering_chest_by_hand,finger_to_mouth,hands_on_lap,
+第四在于环境交互：例如：grinding,fingering,licking_penis,spread legs,wariza,sitting_in_tree,lotus_position,sitting_on_rock,sitting_on_stairs,folded,cameltoe,
+第五在于衣物细节:例如XX半脱，露出XX
+第六在于镜头描写，从XX往XX看，上半身还是下半身，例如从下往上的下半身，从上往下的上半身.lower_body,between_legs,between_breasts,pantyshot,looking_at_viewer,
+第七在于人物此时的位置，例如: diningroom, gym, bedroom, indoors, home, beach
+第八在于当前时间,morning, noon ，night, emphasize the lighting situation..
+
+<Tag_注意事项>
+#  Tag规范：禁用中文；原创角色禁止使用人物英文名；同人/已有作品角色必须把官方英文名或常用角色Tag放在提示词最前面
+1. 拆解复合词：【如：月下→moonlight,night】
+2. 排除元素：“no+Tag”明确强调排除，默认绘图“不提及也易生成”的元素【如：穿衣但不穿胸罩→no bra；穿短裙但不穿内裤→no panties】
+
+# 画面限制：仅描述画面中“客观存在的人/物/背景及正在发生的物理动作“，严禁加入人物内心想法、回忆、幻想、预告、计划，及比喻、抽象描述等非视觉化内容
+【如：构图变化：全身→仅下半身→移除"shirt, expression"等上半身Tag】
+【如：人物视线：正面→背对→移除"eye color"等面部Tag→再添加：from behind】
+【如：遮挡视线：脸庞遮盖/蒙眼→移除"eye color"等眼部Tag，添加：face covered/blindfold】
+【如：对话转动作：“你看，我今天穿内裤了。”→撩裙子,可见内裤→lifting skirt,panties】
+</Tag_注意事项>
+
+角色描述 以Character 1 Prompt为示例
+身份：
+ - 主体标识：【如：girl、boy、other】
+ - 同人角色：提示词第一项必须是英文全名\\(作品名\\)或常用角色Tag（下划线_替换成空格，/转义为\\），再接外貌、服装、动作等Tag
+ - 原创角色：名字替换为"original"(也就是人物卡角色)
+特征：
+ - 基础特征：发型、发色、瞳色、罩杯
+ - 专属特征：年龄、职业、性格、皮肤、种族等
+**特征根据场景和图片的构图智能调整,冲突则临时移除**
+- 互动动作&细节：
+  - 自身【如：hands on own ass、grab own ass、arms behind back、covering chest by hand】
+  - 对方【如：hand on others' chest 、grabbing another's hair 、penis grab、covering another's eyes、princess carry】
+  - 物品【如：holding doorknob、clothes lift、sex toy on floor、bowl in front of girl、dildo in mouth】
+  - 环境【如：partially submerged】
+**同步/非同步：【如：双手举高→raising hands；单手举高→raising hand, hand in pocket】**
+表情:
+ - 视线：【如：looking at viewer】
+ - 面部：【如：open mouth】
+ - 表情：【如：smile、blush】
+ - 生理反应：【wet、pussy juice、cum、dripping】
+
+<Tag_智能调整>
+# 个数分配：按”画面视觉占比及焦点”分配动态不同分类的Tag个数
+
+# 排序调整：按”画面视觉占比及焦点”从高到低排序；并将同分类逻辑关联的Tag相邻排列，避免分散
+
+ ### 核心一致性规范 (极其重要):
+1. **场景与状态连续性**：必须准确保留人物外貌、着装状态、道具和相对位置。剧情未明确换地点或明显推进时间时，后续每张图必须重复相同的地点、时段、天气、光线、背景结构及主要道具等核心环境Tag，只根据正文改变动作、表情和镜头，不得擅自换景；剧情明确改变的状态才更新，其他Tag保持不变。
+2. **同人角色/固定外观一致性**：对于特定世界观或同人角色，提示词最前面必须放官方英文名或常用角色Tag，并带上极其准确的专属特征Tag组合。对常驻特征（如特定发型、异色瞳、专属装饰物等）加上最高权重 {{{Tag}}}，避免生成外形崩坏和不一致。
+
+特别提示：出现user或主角参与的情况，禁止出现主角的人物形象(脸部，头部）！必须使用第一视角(POV）相关提示词！且要作为Character  Prompt添加，禁止出现用户/主角名字(包括英文和拼音），中文和{{user}}是明令禁止的；同人角色本人的官方角色名仍按上方规则放在最前面。一定要保持同一人物在上下文中的形象一致性，不要丢失人物特性(如有异色瞳特征人物），涉及人物常见特征(如发色，瞳孔颜色等）的提示词请增加权重"""
 _IMAGE_PROMPT_SPEC_PATH = Path(__file__).resolve().parents[1] / "image_prompt_spec.txt"
 try:
-    IMAGE_PROMPT_SPEC = _IMAGE_PROMPT_SPEC_PATH.read_text(encoding="utf-8").strip()
+    IMAGE_PROMPT_SPEC = _IMAGE_PROMPT_SPEC_PATH.read_text(
+        encoding="utf-8-sig"
+    ).strip()
 except OSError:
-    IMAGE_PROMPT_SPEC = ""
+    IMAGE_PROMPT_SPEC = _EMBEDDED_IMAGE_PROMPT_SPEC.strip()
 
 MODE_LABELS = {MODE_NORMAL: "日常聊天", MODE_RP: "实景角色扮演"}
 
