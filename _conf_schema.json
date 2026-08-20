@@ -60,6 +60,18 @@
         "_special": "select_provider",
         "default": ""
     },
+    "rp_image_prompt_timeout": {
+        "description": "Tag 提取超时时间（秒）",
+        "hint": "调用 LLM 提炼生图 Tag 的最大等待超时时间（秒）。默认 60 秒，若模型响应较慢可适当调大。",
+        "type": "int",
+        "default": 60
+    },
+    "rp_image_gen_timeout": {
+        "description": "NAI 生图超时时间（秒）",
+        "hint": "调用 NAI 生图插件生成图片的最大等待超时时间（秒）。默认 240 秒，遇到网络卡顿或排队时可调大。",
+        "type": "int",
+        "default": 240
+    },
     "rp_image_prompt_extra": {
         "description": "提示词附加要求",
         "hint": "撰写生图提示词时附加的固定要求，例如统一画风：anime style, soft lighting, cinematic composition。",

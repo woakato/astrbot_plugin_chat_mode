@@ -415,18 +415,25 @@ class ChatModePlugin(Star):
             prompt = await self._compose_image_prompt(umo, scene, user_text, reply_text)
             if not prompt:
                 return
-            result = await asyncio.wait_for(
-                api.generate_for_companion(
-                    self,
-                    {
-                        "prompt_text": prompt,
-                        "prompt_format": "nai",
-                        "workflow_kind": "rp_illustration",
-                        "session_key": umo,
-                    },
-                ),
-                timeout=240,
-            )
+            gen_timeout = max(10, int(self.config.get("rp_image_gen_timeout", 240) or 240))
+            try:
+                result = await asyncio.wait_for(
+                    api.generate_for_companion(
+                        self,
+                        {
+                            "prompt_text": prompt,
+                            "prompt_format": "nai",
+                            "workflow_kind": "rp_illustration",
+                            "session_key": umo,
+                        },
+                    ),
+                    timeout=gen_timeout,
+                )
+            except TimeoutError:
+                logger.warning(
+                    f"[{umo}] NAI image generation timed out after {gen_timeout}s"
+                )
+                return
             image_path = str((result or {}).get("image_path") or "")
             if not image_path:
                 logger.info(
@@ -461,11 +468,18 @@ class ChatModePlugin(Star):
         extra = str(self.config.get("rp_image_prompt_extra", "")).strip()
         if extra:
             lines.append(f"附加要求：{extra}")
-        resp = await asyncio.wait_for(
-            provider.text_chat(prompt="\n".join(lines), system_prompt=system_prompt),
-            timeout=60,
-        )
-        return (resp.completion_text or "").strip().strip('"“”‘’')[:600]
+        prompt_timeout = max(5, int(self.config.get("rp_image_prompt_timeout", 60) or 60))
+        try:
+            resp = await asyncio.wait_for(
+                provider.text_chat(prompt="\n".join(lines), system_prompt=system_prompt),
+                timeout=prompt_timeout,
+            )
+            return (resp.completion_text or "").strip().strip('"“”‘’')[:600]
+        except TimeoutError:
+            logger.warning(
+                f"[{umo}] LLM image prompt extraction timed out after {prompt_timeout}s"
+            )
+            return ""
 
     # ==================== commands ====================
 
