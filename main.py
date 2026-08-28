@@ -96,9 +96,7 @@ _EMBEDDED_IMAGE_PROMPT_SPEC = r"""你是文生图提示词助手。请根据给�
 特别提示：出现user或主角参与的情况，禁止出现主角的人物形象(脸部，头部）！必须使用第一视角(POV）相关提示词！且要作为Character  Prompt添加，禁止出现用户/主角名字(包括英文和拼音），中文和{{user}}是明令禁止的；同人角色本人的官方角色名仍按上方规则放在最前面。一定要保持同一人物在上下文中的形象一致性，不要丢失人物特性(如有异色瞳特征人物），涉及人物常见特征(如发色，瞳孔颜色等）的提示词请增加权重"""
 _IMAGE_PROMPT_SPEC_PATH = Path(__file__).resolve().parents[1] / "image_prompt_spec.txt"
 try:
-    IMAGE_PROMPT_SPEC = _IMAGE_PROMPT_SPEC_PATH.read_text(
-        encoding="utf-8-sig"
-    ).strip()
+    IMAGE_PROMPT_SPEC = _IMAGE_PROMPT_SPEC_PATH.read_text(encoding="utf-8-sig").strip()
 except OSError:
     IMAGE_PROMPT_SPEC = _EMBEDDED_IMAGE_PROMPT_SPEC.strip()
 
@@ -166,6 +164,16 @@ class ChatModePlugin(Star):
 
     async def _set_conv_id(self, umo: str, mode: str, cid: str) -> None:
         await self.put_kv_data(f"conv_id:{mode}:{umo}", cid)
+
+    # ==================== RP image continuity anchor ====================
+
+    async def _get_image_anchor(self, umo: str) -> str:
+        """Return the previous illustration's full tag prompt ("" when none)."""
+        return str(await self.get_kv_data(f"rp_image_anchor:{umo}", "") or "")
+
+    async def _set_image_anchor(self, umo: str, prompt: str) -> None:
+        """Store the tag prompt, or clear the anchor with an empty string."""
+        await self.put_kv_data(f"rp_image_anchor:{umo}", prompt)
 
     # ==================== conversation isolation ====================
 
@@ -378,7 +386,9 @@ class ChatModePlugin(Star):
         """Write an image prompt from the RP turn, generate via NAI, then send it.
 
         Runs as a detached background task so the text reply is not delayed
-        by prompt writing or image generation.
+        by prompt writing or image generation. On success the submitted
+        prompt is stored as the session's continuity anchor for the next
+        illustration.
         """
         try:
             api = self._nai_api()
@@ -390,7 +400,9 @@ class ChatModePlugin(Star):
             prompt = await self._compose_image_prompt(umo, scene, user_text, reply_text)
             if not prompt:
                 return
-            gen_timeout = max(10, int(self.config.get("rp_image_gen_timeout", 240) or 240))
+            gen_timeout = max(
+                10, int(self.config.get("rp_image_gen_timeout", 240) or 240)
+            )
             try:
                 result = await asyncio.wait_for(
                     api.generate_for_companion(
@@ -416,6 +428,9 @@ class ChatModePlugin(Star):
                     f"{(result or {}).get('note', 'no image')}"
                 )
                 return
+            # Anchor the continuity chain only to prompts that produced a
+            # real image, so failed/skipped turns never poison it.
+            await self._set_image_anchor(umo, prompt)
             await event.send(MessageChain(chain=[Image.fromFileSystem(image_path)]))
             logger.info(f"[{umo}] RP illustration sent | path={image_path}")
         except Exception:
@@ -424,7 +439,23 @@ class ChatModePlugin(Star):
     async def _compose_image_prompt(
         self, umo: str, scene: str, user_text: str, reply_text: str
     ) -> str:
-        """Ask the selected or current LLM to write an English image prompt for the RP turn."""
+        """Ask the selected or current LLM to write an English image prompt for the RP turn.
+
+        With a continuity anchor present (the previous illustration's tag
+        prompt), it is fed back so character/environment tags carry over
+        verbatim and only action/expression/camera tags follow the turn
+        text. The static scene setting only bootstraps the first image.
+
+        Args:
+            umo: Unified message origin of the session.
+            scene: Static scene text set via "/rp on"; bootstrap only.
+            user_text: The current turn's user message text.
+            reply_text: The current turn's LLM reply text.
+
+        Returns:
+            The English tag prompt, or "" when no provider is available or
+            the prompt-writing call times out.
+        """
         provider_id = str(self.config.get("rp_image_prompt_provider_id", "")).strip()
         provider = None
         if provider_id:
@@ -436,7 +467,22 @@ class ChatModePlugin(Star):
             return ""
         user_spec = str(self.config.get("rp_image_prompt_spec", "")).strip()
         system_prompt = user_spec if user_spec else IMAGE_PROMPT_SPEC
-        lines = [f"场景设定：{scene or '未设定'}"]
+        anchor = await self._get_image_anchor(umo)
+        if anchor:
+            logger.info(
+                f"[{umo}] RP illustration anchored to previous image prompt "
+                f"({len(anchor)} chars)"
+            )
+            lines = [
+                f"上一张图的完整提示词：{anchor}",
+                "一致性要求：这是同一剧情的连续配图。上一张图提示词中的人物与"
+                "环境Tag必须延续（相同Tag、顺序与权重），仅允许根据本轮正文调整"
+                "动作、表情、视线与镜头构图类Tag，或按系统规范移除当前构图下"
+                "不可见的Tag；只有本轮正文明确发生地点、时间或着装变化时，才"
+                "替换对应的环境/服装Tag。",
+            ]
+        else:
+            lines = [f"场景设定：{scene or '未设定'}"]
         if user_text:
             lines.append(f"用户这一轮：{user_text[:300]}")
         if reply_text:
@@ -444,10 +490,14 @@ class ChatModePlugin(Star):
         extra = str(self.config.get("rp_image_prompt_extra", "")).strip()
         if extra:
             lines.append(f"附加要求：{extra}")
-        prompt_timeout = max(5, int(self.config.get("rp_image_prompt_timeout", 60) or 60))
+        prompt_timeout = max(
+            5, int(self.config.get("rp_image_prompt_timeout", 60) or 60)
+        )
         try:
             resp = await asyncio.wait_for(
-                provider.text_chat(prompt="\n".join(lines), system_prompt=system_prompt),
+                provider.text_chat(
+                    prompt="\n".join(lines), system_prompt=system_prompt
+                ),
                 timeout=prompt_timeout,
             )
             return (resp.completion_text or "").strip().strip('"“”‘’')[:600]
@@ -483,10 +533,16 @@ class ChatModePlugin(Star):
             if scene:
                 state["scene"] = scene
                 await self._save_state(umo, state)
+                # Scene changed mid-session: the old visual anchor no longer holds.
+                await self._set_image_anchor(umo, "")
                 yield event.plain_result(f"已在角色扮演模式中，场景已更新为：{scene}")
             else:
                 yield event.plain_result("已经处于实景角色扮演模式中了。")
             return
+
+        # Fresh RP entry: reset the visual continuity anchor so the next
+        # illustration bootstraps from the scene setting.
+        await self._set_image_anchor(umo, "")
 
         if self.config.get("isolate_conversation", True):
             try:
