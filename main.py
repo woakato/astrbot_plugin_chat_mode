@@ -167,22 +167,13 @@ class ChatModePlugin(Star):
 
     # ==================== RP image continuity anchor ====================
 
-    async def _get_image_anchor(self, umo: str) -> tuple[str, str]:
-        """Return the previous illustration's (tag prompt, image path).
+    async def _get_image_anchor(self, umo: str) -> str:
+        """Return the previous illustration's full tag prompt ("" when none)."""
+        return str(await self.get_kv_data(f"rp_image_anchor:{umo}", "") or "")
 
-        Either element may be "" when the anchor chain has not started or
-        no image path is tracked yet.
-        """
-        prompt = str(await self.get_kv_data(f"rp_image_anchor:{umo}", "") or "")
-        ref_path = str(await self.get_kv_data(f"rp_image_ref:{umo}", "") or "")
-        return prompt, ref_path
-
-    async def _set_image_anchor(
-        self, umo: str, prompt: str, image_path: str = ""
-    ) -> None:
-        """Store the (prompt, image) pair, or clear both with empty strings."""
+    async def _set_image_anchor(self, umo: str, prompt: str) -> None:
+        """Store the tag prompt, or clear the anchor with an empty string."""
         await self.put_kv_data(f"rp_image_anchor:{umo}", prompt)
-        await self.put_kv_data(f"rp_image_ref:{umo}", image_path)
 
     # ==================== conversation isolation ====================
 
@@ -395,11 +386,9 @@ class ChatModePlugin(Star):
         """Write an image prompt from the RP turn, generate via NAI, then send it.
 
         Runs as a detached background task so the text reply is not delayed
-        by prompt writing or image generation. The previous illustration is
-        passed to NAI as a visual reference when its file still exists;
-        otherwise the request degrades to plain text2img. On success the
-        submitted prompt and the new image path are stored as the session's
-        continuity anchor for the next illustration.
+        by prompt writing or image generation. On success the submitted
+        prompt is stored as the session's continuity anchor for the next
+        illustration.
         """
         try:
             api = self._nai_api()
@@ -411,28 +400,20 @@ class ChatModePlugin(Star):
             prompt = await self._compose_image_prompt(umo, scene, user_text, reply_text)
             if not prompt:
                 return
-            _, prev_ref = await self._get_image_anchor(umo)
-            request = {
-                "prompt_text": prompt,
-                "prompt_format": "nai",
-                "workflow_kind": "rp_illustration",
-                "session_key": umo,
-            }
-            if prev_ref and Path(prev_ref).is_file():
-                # Pixel-level continuity on top of the tag anchor; the NAI
-                # plugin routes the reference per its own reference mode.
-                request["reference_image_paths"] = [prev_ref]
-            elif prev_ref:
-                logger.info(
-                    f"[{umo}] previous illustration file missing, "
-                    "fall back to text2img without reference"
-                )
             gen_timeout = max(
                 10, int(self.config.get("rp_image_gen_timeout", 240) or 240)
             )
             try:
                 result = await asyncio.wait_for(
-                    api.generate_for_companion(self, request),
+                    api.generate_for_companion(
+                        self,
+                        {
+                            "prompt_text": prompt,
+                            "prompt_format": "nai",
+                            "workflow_kind": "rp_illustration",
+                            "session_key": umo,
+                        },
+                    ),
                     timeout=gen_timeout,
                 )
             except TimeoutError:
@@ -449,7 +430,7 @@ class ChatModePlugin(Star):
                 return
             # Anchor the continuity chain only to prompts that produced a
             # real image, so failed/skipped turns never poison it.
-            await self._set_image_anchor(umo, prompt, image_path)
+            await self._set_image_anchor(umo, prompt)
             await event.send(MessageChain(chain=[Image.fromFileSystem(image_path)]))
             logger.info(f"[{umo}] RP illustration sent | path={image_path}")
         except Exception:
@@ -486,7 +467,7 @@ class ChatModePlugin(Star):
             return ""
         user_spec = str(self.config.get("rp_image_prompt_spec", "")).strip()
         system_prompt = user_spec if user_spec else IMAGE_PROMPT_SPEC
-        anchor, _ = await self._get_image_anchor(umo)
+        anchor = await self._get_image_anchor(umo)
         if anchor:
             logger.info(
                 f"[{umo}] RP illustration anchored to previous image prompt "
