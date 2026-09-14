@@ -1,7 +1,7 @@
 {
   "metadata": {
     "display_name": "Daily / Roleplay Chat Mode Switch",
-    "desc": "Switch between daily persona chat and immersive roleplay per session. Isolates conversation histories, cleanses action styles from recalled long-term memories, and optionally illustrates RP scenes with NovelAI images.",
-    "short_desc": "Per-session daily vs immersive roleplay mode switch with history isolation, memory style cleansing, and probabilistic scene illustrations."
+    "desc": "Switch between daily persona chat and immersive roleplay per session. Isolates conversation histories, cleanses action styles from recalled long-term memories, optionally illustrates RP scenes with NovelAI images, and takes over RP-mode TTS with per-turn probability, audio+text dual output and parenthesized-action stripping.",
+    "short_desc": "Per-session daily vs immersive roleplay mode switch with history isolation, memory style cleansing, probabilistic scene illustrations, and RP-controllable TTS."
   }
 }

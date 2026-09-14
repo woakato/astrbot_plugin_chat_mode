@@ -15,6 +15,12 @@ other across three channels:
    from the memory blocks injected by memory plugins (LivingMemory,
    MemoryCompanion) before the LLM sees them, so the RP expression style
    stored in global memories does not bleed into daily chat.
+
+When TTS is enabled, RP mode also takes over speech synthesis for the
+session: trigger probability, optional audio+text dual output, and
+stripping action parentheses from the spoken text are all configurable
+(see the rp_tts_* options and the RP TTS hook below). Daily chat keeps
+using AstrBot's built-in TTS pipeline untouched.
 """
 
 import asyncio
@@ -26,11 +32,20 @@ from collections.abc import AsyncGenerator
 from pathlib import Path
 
 from astrbot.api import AstrBotConfig, logger
-from astrbot.api.event import AstrMessageEvent, MessageChain, MessageEventResult, filter
-from astrbot.api.message_components import Image
+from astrbot.api.event import (
+    AstrMessageEvent,
+    MessageChain,
+    MessageEventResult,
+    ResultContentType,
+    filter,
+)
+from astrbot.api.message_components import Image, Plain, Record
 from astrbot.api.provider import LLMResponse, ProviderRequest
 from astrbot.api.star import Context, Star
+from astrbot.core import file_token_service
+from astrbot.core.provider.provider import TTSProvider
 from astrbot.core.star.filter.command import GreedyStr
+from astrbot.core.star.session_llm_manager import SessionServiceManager
 
 MODE_NORMAL = "normal"
 MODE_RP = "rp"
@@ -118,6 +133,10 @@ PAREN_ACTION_RE = re.compile(r"[（(]([^()（）\n]{1,40})[)）]")
 KEEP_PAREN_RE = re.compile(
     r"Importance:|^[\d\s.:/%,~-]+$|证据[:：]|周[一二三四五六日天末]|星期[一二三四五六日天]"
 )
+# Parenthesized text inside an RP reply for the spoken version: any
+# non-nested full/half-width paren group, regardless of length or line
+# breaks — RP action beats can be long. Whatever survives is what TTS reads.
+RP_TTS_PAREN_RE = re.compile(r"[（(][^（）()]*[)）]", re.DOTALL)
 
 
 class ChatModePlugin(Star):
@@ -142,15 +161,20 @@ class ChatModePlugin(Star):
             umo: Unified message origin, e.g. "aiocqhttp:FriendMessage:12345".
 
         Returns:
-            A dict with keys "mode" (MODE_NORMAL | MODE_RP) and "scene" (str).
+            A dict with keys "mode" (MODE_NORMAL | MODE_RP), "scene" (str)
+            and "tts_probability" (float | None, per-session RP TTS override).
         """
         state = self._states.get(umo)
         if state is None:
             raw = await self.get_kv_data(f"chat_mode:{umo}", None)
             state = raw if isinstance(raw, dict) else {}
+            prob = state.get("tts_probability")
             state = {
                 "mode": state.get("mode", MODE_NORMAL),
                 "scene": str(state.get("scene") or ""),
+                "tts_probability": (
+                    float(prob) if isinstance(prob, (int, float)) else None
+                ),
             }
             self._states[umo] = state
         return state
@@ -316,6 +340,196 @@ class ChatModePlugin(Star):
                 self._sanitize_memory_injection(req, umo)
         except Exception:
             logger.error("chat-mode decoration failed", exc_info=True)
+
+    # ==================== RP mode TTS takeover ====================
+
+    @staticmethod
+    def _strip_rp_parentheses(text: str) -> str:
+        """Remove all non-nested parenthesized segments from reply text."""
+        return RP_TTS_PAREN_RE.sub("", text)
+
+    @staticmethod
+    def _tidy_spoken(text: str) -> str:
+        """Collapse whitespace left behind by removed parentheses."""
+        text = re.sub(r"[ \t]{2,}", " ", text)
+        text = re.sub(r" ?\n ?", "\n", text)
+        return text.strip()
+
+    @staticmethod
+    def _clean_tts_text(text: str) -> str:
+        """Normalize text that should not be sent to TTS synthesis.
+
+        Markdown emphasis markers would be read aloud by some engines, so
+        they are removed before synthesis (the visible text keeps them).
+        """
+        return text.replace("**", "").replace("__", "")
+
+    def _tts_probability(self, state: dict) -> float:
+        """Session override from /rp tts, else the configured RP probability."""
+        prob = state.get("tts_probability")
+        if prob is None:
+            try:
+                prob = float(self.config.get("rp_tts_probability", 1.0))
+            except (TypeError, ValueError):
+                prob = 1.0
+        return min(max(prob, 0.0), 1.0)
+
+    async def _resolve_tts_provider(self, umo: str) -> TTSProvider | None:
+        """Configured rp_tts_provider_id first, else the session's default TTS."""
+        provider_id = str(self.config.get("rp_tts_provider_id", "")).strip()
+        if provider_id:
+            provider = self.context.get_provider_by_id(provider_id)
+            if isinstance(provider, TTSProvider):
+                return provider
+            logger.warning(
+                f"[{umo}] rp_tts_provider_id '{provider_id}' is not an available "
+                "TTS provider, falling back to the session default"
+            )
+        try:
+            provider = await self.context.get_using_tts_provider_async(umo)
+        except Exception:
+            logger.error("failed to resolve the TTS provider", exc_info=True)
+            return None
+        return provider if isinstance(provider, TTSProvider) else None
+
+    async def _synthesize(self, provider: TTSProvider, text: str) -> str | None:
+        """Return the audio file path for text, or None on failure/timeout."""
+        timeout = max(10, int(self.config.get("rp_tts_timeout", 60) or 60))
+        try:
+            return await asyncio.wait_for(provider.get_audio(text), timeout=timeout)
+        except TimeoutError:
+            logger.warning(f"RP TTS synthesis timed out after {timeout}s")
+            return None
+        except Exception:
+            logger.error("RP TTS synthesis failed", exc_info=True)
+            return None
+
+    async def _make_record(
+        self,
+        text: str,
+        audio_path: str,
+        use_file_service: bool,
+        callback_base: str,
+    ) -> Record:
+        """Build a Record like the core pipeline does, with optional URL."""
+        url = audio_path
+        if use_file_service and callback_base:
+            try:
+                token = await file_token_service.register_file(audio_path)
+                url = f"{callback_base}/api/file/{token}"
+            except Exception:
+                logger.error(
+                    "RP TTS file service registration failed, "
+                    "using the local audio path",
+                    exc_info=True,
+                )
+        return Record(file=url, url=url, text=text)
+
+    @filter.on_decorating_result()
+    async def rp_tts_decorate(self, event: AstrMessageEvent) -> None:
+        """Take over TTS for RP sessions: probability, dual output, paren strip.
+
+        The core pipeline (ResultDecorateStage) decides TTS purely from the
+        global ``provider_tts_settings`` and cannot know the session's chat
+        mode, so in RP mode this hook rolls the session's own probability and,
+        on a hit, synthesizes the audio itself. Either way the result is
+        marked GENERAL_RESULT so the core never double-voices the reply.
+        Daily-chat sessions are left completely untouched.
+
+        The visible text is never modified: ``rp_tts_strip_brackets`` only
+        affects what the TTS engine reads, so RP action parentheses keep
+        their on-screen immersion while the voice skips them.
+        """
+        try:
+            umo = event.unified_msg_origin
+            state = await self._get_state(umo)
+            if state.get("mode") != MODE_RP:
+                return
+            global_cfg = self.context.get_config()
+            tts_cfg = global_cfg.get("provider_tts_settings") or {}
+            if not tts_cfg.get("enable", False):
+                return
+            if not await SessionServiceManager.should_process_tts_request(event):
+                return
+
+            result = event.get_result()
+            if result is None or not result.chain:
+                return
+            if result.result_content_type in (
+                ResultContentType.STREAMING_RESULT,
+                ResultContentType.STREAMING_FINISH,
+            ):
+                # Streaming replies bypass the core's TTS branch as well.
+                logger.debug(
+                    f"[{umo}] streaming output active, RP TTS takeover skipped"
+                )
+                return
+            if not result.is_llm_result():
+                return
+
+            provider = await self._resolve_tts_provider(umo)
+            voiced_turn = provider is not None and (
+                random.random() <= self._tts_probability(state)
+            )
+            if voiced_turn:
+                strip_on = bool(self.config.get("rp_tts_strip_brackets", True))
+                keep_text = bool(self.config.get("rp_tts_dual_output", False))
+                text_source = str(
+                    self.config.get("rp_tts_text_source", "stripped")
+                ).strip().lower()
+                use_file_service = bool(tts_cfg.get("use_file_service", False))
+                callback_base = str(global_cfg.get("callback_api_base", "") or "")
+                new_chain = []
+                synthesized = 0
+                for comp in result.chain:
+                    if not (
+                        isinstance(comp, Plain) and comp.text and len(comp.text) > 1
+                    ):
+                        # Non-text segments (images, ...) pass through; their
+                        # presence already stops the core from voicing them.
+                        new_chain.append(comp)
+                        continue
+                    spoken = (
+                        self._tidy_spoken(self._strip_rp_parentheses(comp.text))
+                        if strip_on
+                        else comp.text
+                    )
+                    audio_path = (
+                        await self._synthesize(provider, self._clean_tts_text(spoken))
+                        if spoken.strip()
+                        else None
+                    )
+                    if audio_path:
+                        new_chain.append(
+                            await self._make_record(
+                                spoken, audio_path, use_file_service, callback_base
+                            )
+                        )
+                        synthesized += 1
+                        if keep_text:
+                            # "stripped" mirrors exactly what the voice said;
+                            # "original" keeps the immersive full text.
+                            shown = (
+                                spoken
+                                if text_source == "stripped"
+                                else comp.text
+                            )
+                            new_chain.append(Plain(shown))
+                    else:
+                        new_chain.append(Plain(comp.text))
+                if synthesized:
+                    result.chain = new_chain
+                    logger.info(
+                        f"[{umo}] RP TTS voiced {synthesized} segment(s), "
+                        f"dual_output={keep_text}, strip_brackets={strip_on}"
+                    )
+                # else: every segment failed synthesis — plain-text fallback.
+            # In RP mode with TTS on, the core must not roll its own dice on
+            # top of ours: clear the LLM_RESULT flag for every handled turn.
+            result.set_result_content_type(ResultContentType.GENERAL_RESULT)
+            event.set_result(result)
+        except Exception:
+            logger.error("RP TTS decoration failed", exc_info=True)
 
     # ==================== RP illustration (NAI integration) ====================
 
@@ -514,7 +728,7 @@ class ChatModePlugin(Star):
 
     @filter.command_group("rp", alias={"roleplay"})
     def rp_group(self):
-        """切换日常聊天/实景角色扮演模式：/rp on [场景] · /rp off · /rp status"""
+        """切换日常聊天/实景角色扮演模式：/rp on [场景] · /rp off · /rp status · /rp tts [概率]"""
 
     @rp_group.command("on", alias={"开启", "开始", "进入"})
     async def rp_on(
@@ -615,6 +829,19 @@ class ChatModePlugin(Star):
         lines = [f"当前模式：{MODE_LABELS.get(mode, mode)}"]
         if mode == MODE_RP:
             lines.append(f"场景设定：{state.get('scene') or '（未设置）'}")
+            lines.append(
+                "TTS 触发概率："
+                f"{self._tts_probability(state):.0%}"
+                + ("（会话临时）" if state.get("tts_probability") is not None else "")
+            )
+            lines.append(
+                "TTS 语音+文字双输出："
+                f"{'开' if self.config.get('rp_tts_dual_output', False) else '关'}"
+            )
+            lines.append(
+                "TTS 剔除括号动作："
+                f"{'开' if self.config.get('rp_tts_strip_brackets', True) else '关'}"
+            )
 
         if self.config.get("isolate_conversation", True):
             cm = self.context.conversation_manager
@@ -628,3 +855,52 @@ class ChatModePlugin(Star):
                 else:
                     lines.append(f"{label}对话：未创建")
         yield event.plain_result("\n".join(lines))
+
+    @rp_group.command("tts", alias={"语音", "频率"})
+    async def rp_tts(
+        self, event: AstrMessageEvent, percentage: GreedyStr
+    ) -> AsyncGenerator[MessageEventResult, None]:
+        """调整本会话 RP 模式的 TTS 触发频率，如：/rp tts 30；/rp tts 恢复默认"""
+        if not self._check_permission(event):
+            yield event.plain_result("只有管理员可以调整 TTS 设置。")
+            return
+
+        state = await self._get_state(event.unified_msg_origin)
+        if state.get("mode") != MODE_RP:
+            yield event.plain_result("TTS 频率调整仅在角色扮演模式中可用，请先 /rp on。")
+            return
+
+        arg = (percentage or "").strip()
+        if not arg:
+            yield event.plain_result(
+                "用法：/rp tts 30 —— 将本会话 RP 模式的语音触发概率设为每轮 30%；"
+                "/rp tts 默认 —— 恢复配置文件中的概率。"
+            )
+            return
+
+        if arg in ("默认", "恢复", "reset", "default"):
+            state["tts_probability"] = None
+            await self._save_state(event.unified_msg_origin, state)
+            yield event.plain_result(
+                "已恢复配置文件中的 RP TTS 概率："
+                f"{self._tts_probability(state):.0%}。"
+            )
+            return
+
+        try:
+            prob = float(arg.strip("%")) / 100.0
+        except ValueError:
+            yield event.plain_result(f"无法识别的概率：{arg}，请使用 0~100 的数字。")
+            return
+        if not 0.0 <= prob <= 1.0:
+            yield event.plain_result("概率须在 0~100 之间。")
+            return
+
+        state["tts_probability"] = prob
+        await self._save_state(event.unified_msg_origin, state)
+        note = "（每轮都会发语音）" if prob >= 1 else (
+            "（本模式不再发语音）" if prob <= 0 else ""
+        )
+        yield event.plain_result(
+            f"本会话 RP 模式的 TTS 触发概率已设为 {prob:.0%}{note}。"
+        )

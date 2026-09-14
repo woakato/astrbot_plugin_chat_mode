@@ -83,5 +83,42 @@
         "hint": "撰写生图提示词时附加的固定要求，例如统一画风：anime style, soft lighting, cinematic composition。",
         "type": "text",
         "default": ""
+    },
+    "rp_tts_probability": {
+        "description": "RP 模式 TTS 触发概率",
+        "hint": "仅角色扮演模式生效（需先在全局开启 TTS）。每轮回复按此概率触发语音，取值 0~1，例如 0.5 表示每轮 50% 概率发语音；1 表示每轮都发。会话内可用 /rp tts 30 临时覆盖。日常模式不受影响，始终跟随全局 TTS 触发概率。",
+        "type": "float",
+        "default": 1.0
+    },
+    "rp_tts_dual_output": {
+        "description": "RP 模式语音+文字双输出",
+        "hint": "仅角色扮演模式生效。开启后触发语音的回复会同时发送语音和文字内容（语音在前、文字在后）；关闭则只发语音。日常模式不受此设置影响。",
+        "type": "bool",
+        "default": false
+    },
+    "rp_tts_text_source": {
+        "description": "双输出附带文字",
+        "hint": "仅角色扮演模式生效，配合「语音+文字双输出」使用。stripped：附带文字与语音一致（已剔除括号动作）；original：附带完整原文（保留括号，屏幕文字与语音可能不同）。默认 stripped。",
+        "type": "string",
+        "default": "stripped"
+    },
+    "rp_tts_strip_brackets": {
+        "description": "RP 模式 TTS 剔除括号内容",
+        "hint": "仅角色扮演模式生效。开启后语音合成前剔除回复中括号内的动作/神态描写（如（轻轻握住你的手）），避免旁白被读出来；屏幕上的文字仍完整保留括号内容不受影响。",
+        "type": "bool",
+        "default": true
+    },
+    "rp_tts_provider_id": {
+        "description": "RP 模式 TTS 引擎",
+        "hint": "仅角色扮演模式生效。指定 RP 模式使用的 TTS Provider ID，可与人设日常回复所用引擎不同（如 RP 用更贴合角色的音色）。留空则使用当前会话默认的 TTS 引擎。",
+        "type": "string",
+        "_special": "select_provider_tts",
+        "default": ""
+    },
+    "rp_tts_timeout": {
+        "description": "RP 模式 TTS 合成超时（秒）",
+        "hint": "仅角色扮演模式生效。单个文字段合成语音的最大等待时间（秒），超时则本轮回退为纯文字。默认 60 秒。",
+        "type": "int",
+        "default": 60
     }
 }
