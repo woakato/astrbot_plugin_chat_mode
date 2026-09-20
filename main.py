@@ -15,6 +15,10 @@ other across three channels:
    from the memory blocks injected by memory plugins (LivingMemory,
    MemoryCompanion) before the LLM sees them, so the RP expression style
    stored in global memories does not bleed into daily chat.
+4. Function tools: in RP mode, strips every function tool declaration
+   except the whitelisted memory recall tool (RP_KEEP_TOOLS), because
+   attached tool schemas flip Gemini-style models into assistant mode
+   and sharply raise refusal rates on roleplay turns.
 
 When TTS is enabled, RP mode also takes over speech synthesis for the
 session: trigger probability, optional audio+text dual output, and
@@ -116,6 +120,14 @@ except OSError:
     IMAGE_PROMPT_SPEC = _EMBEDDED_IMAGE_PROMPT_SPEC.strip()
 
 MODE_LABELS = {MODE_NORMAL: "日常聊天", MODE_RP: "实景角色扮演"}
+
+# Function tools that survive RP-mode turns. Every other tool declaration
+# (cron, MCP, plugin tools) is stripped from the request, because attached
+# tool schemas flip Gemini-style models into assistant mode and make them
+# refuse roleplay content far more often. LivingMemory's recall tool is
+# whitelisted so the character can still look up long-term memories; add
+# "manage_core_memory" here to keep the core-memory manager as well.
+RP_KEEP_TOOLS = {"recall_long_term_memory"}
 
 # Memory plugins wrap recalled memories in these markers regardless of the
 # injection channel (extra user content parts / prompt / fake tool call):
@@ -322,6 +334,13 @@ class ChatModePlugin(Star):
             event.set_extra("chat_mode", mode)
 
             if mode == MODE_RP:
+                # Keep only whitelisted tools (see RP_KEEP_TOOLS for why).
+                if req.func_tool is not None:
+                    for tool in list(req.func_tool.tools):
+                        if tool.name not in RP_KEEP_TOOLS:
+                            req.func_tool.remove_tool(tool.name)
+                    if req.func_tool.empty():
+                        req.func_tool = None
                 block = str(self.config.get("rp_prompt", "")).strip()
                 scene = str(state.get("scene", "")).strip()
                 if scene:
@@ -474,9 +493,11 @@ class ChatModePlugin(Star):
             if voiced_turn:
                 strip_on = bool(self.config.get("rp_tts_strip_brackets", True))
                 keep_text = bool(self.config.get("rp_tts_dual_output", False))
-                text_source = str(
-                    self.config.get("rp_tts_text_source", "stripped")
-                ).strip().lower()
+                text_source = (
+                    str(self.config.get("rp_tts_text_source", "stripped"))
+                    .strip()
+                    .lower()
+                )
                 use_file_service = bool(tts_cfg.get("use_file_service", False))
                 callback_base = str(global_cfg.get("callback_api_base", "") or "")
                 new_chain = []
@@ -509,11 +530,7 @@ class ChatModePlugin(Star):
                         if keep_text:
                             # "stripped" mirrors exactly what the voice said;
                             # "original" keeps the immersive full text.
-                            shown = (
-                                spoken
-                                if text_source == "stripped"
-                                else comp.text
-                            )
+                            shown = spoken if text_source == "stripped" else comp.text
                             new_chain.append(Plain(shown))
                     else:
                         new_chain.append(Plain(comp.text))
@@ -867,7 +884,9 @@ class ChatModePlugin(Star):
 
         state = await self._get_state(event.unified_msg_origin)
         if state.get("mode") != MODE_RP:
-            yield event.plain_result("TTS 频率调整仅在角色扮演模式中可用，请先 /rp on。")
+            yield event.plain_result(
+                "TTS 频率调整仅在角色扮演模式中可用，请先 /rp on。"
+            )
             return
 
         arg = (percentage or "").strip()
@@ -882,8 +901,7 @@ class ChatModePlugin(Star):
             state["tts_probability"] = None
             await self._save_state(event.unified_msg_origin, state)
             yield event.plain_result(
-                "已恢复配置文件中的 RP TTS 概率："
-                f"{self._tts_probability(state):.0%}。"
+                f"已恢复配置文件中的 RP TTS 概率：{self._tts_probability(state):.0%}。"
             )
             return
 
@@ -898,8 +916,10 @@ class ChatModePlugin(Star):
 
         state["tts_probability"] = prob
         await self._save_state(event.unified_msg_origin, state)
-        note = "（每轮都会发语音）" if prob >= 1 else (
-            "（本模式不再发语音）" if prob <= 0 else ""
+        note = (
+            "（每轮都会发语音）"
+            if prob >= 1
+            else ("（本模式不再发语音）" if prob <= 0 else "")
         )
         yield event.plain_result(
             f"本会话 RP 模式的 TTS 触发概率已设为 {prob:.0%}{note}。"
