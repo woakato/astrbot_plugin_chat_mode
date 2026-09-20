@@ -35,6 +35,18 @@
         "type": "bool",
         "default": false
     },
+    "rp_filter_tools": {
+        "description": "RP 模式过滤函数工具",
+        "hint": "仅角色扮演模式生效。开启后，LLM 请求中除白名单外的全部函数工具声明（定时任务、MCP、其他插件工具等）都会被剔除。挂着工具 schema 会让 Gemini 等模型切入助手状态、显著提高角色扮演内容的拒答率；剔除后 RP 请求与独立前端形态一致。日常模式不受影响。",
+        "type": "bool",
+        "default": true
+    },
+    "rp_keep_tools": {
+        "description": "RP 模式工具白名单",
+        "hint": "配合「RP 模式过滤函数工具」使用，填写在 RP 模式下仍要保留的工具函数名，每行一个。默认保留 LivingMemory 的长期记忆回忆工具（recall_long_term_memory）；如需核心记忆管理工具可加一行 manage_core_memory。",
+        "type": "list",
+        "default": ["recall_long_term_memory"]
+    },
     "rp_image_enabled": {
         "description": "RP 模式场景插图",
         "hint": "角色扮演模式下，每轮对话按概率联动 NAI 生图插件（astrbot_plugin_nai_image）生成场景插图：由当前模型根据场景设定与双方动作描写自动撰写英文提示词后生图发送。未安装 NAI 插件时自动跳过。",

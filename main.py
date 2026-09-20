@@ -15,10 +15,11 @@ other across three channels:
    from the memory blocks injected by memory plugins (LivingMemory,
    MemoryCompanion) before the LLM sees them, so the RP expression style
    stored in global memories does not bleed into daily chat.
-4. Function tools: in RP mode, strips every function tool declaration
-   except the whitelisted memory recall tool (RP_KEEP_TOOLS), because
-   attached tool schemas flip Gemini-style models into assistant mode
-   and sharply raise refusal rates on roleplay turns.
+4. Function tools: when rp_filter_tools is on, RP-mode requests keep only
+   the tools listed in rp_keep_tools and drop every other function tool
+   declaration (cron, MCP, plugin tools), because attached tool schemas
+   flip Gemini-style models into assistant mode and sharply raise refusal
+   rates on roleplay turns.
 
 When TTS is enabled, RP mode also takes over speech synthesis for the
 session: trigger probability, optional audio+text dual output, and
@@ -121,13 +122,13 @@ except OSError:
 
 MODE_LABELS = {MODE_NORMAL: "日常聊天", MODE_RP: "实景角色扮演"}
 
-# Function tools that survive RP-mode turns. Every other tool declaration
-# (cron, MCP, plugin tools) is stripped from the request, because attached
-# tool schemas flip Gemini-style models into assistant mode and make them
-# refuse roleplay content far more often. LivingMemory's recall tool is
-# whitelisted so the character can still look up long-term memories; add
-# "manage_core_memory" here to keep the core-memory manager as well.
-RP_KEEP_TOOLS = {"recall_long_term_memory"}
+# Default function tools that survive RP-mode filtering (see the
+# rp_filter_tools / rp_keep_tools config options). LivingMemory's recall
+# tool is whitelisted so the character can still look up long-term
+# memories; every other declaration (cron, MCP, plugin tools) is stripped,
+# because attached tool schemas flip Gemini-style models into assistant
+# mode and make them refuse roleplay content far more often.
+DEFAULT_RP_KEEP_TOOLS = ["recall_long_term_memory"]
 
 # Memory plugins wrap recalled memories in these markers regardless of the
 # injection channel (extra user content parts / prompt / fake tool call):
@@ -334,10 +335,18 @@ class ChatModePlugin(Star):
             event.set_extra("chat_mode", mode)
 
             if mode == MODE_RP:
-                # Keep only whitelisted tools (see RP_KEEP_TOOLS for why).
-                if req.func_tool is not None:
+                # Keep only the whitelisted tools (rp_filter_tools off
+                # disables the filtering entirely; rp_keep_tools edits it).
+                if self.config.get("rp_filter_tools", True) and req.func_tool:
+                    keep = {
+                        name.strip()
+                        for name in self.config.get(
+                            "rp_keep_tools", DEFAULT_RP_KEEP_TOOLS
+                        )
+                        if isinstance(name, str) and name.strip()
+                    }
                     for tool in list(req.func_tool.tools):
-                        if tool.name not in RP_KEEP_TOOLS:
+                        if tool.name not in keep:
                             req.func_tool.remove_tool(tool.name)
                     if req.func_tool.empty():
                         req.func_tool = None
