@@ -84,11 +84,57 @@
         "type": "int",
         "default": 240
     },
+    "rp_image_flow": {
+        "description": "RP 配图流程",
+        "hint": "两步出图（默认）：正文回复先发出，插件再另起一次 LLM 调用提炼英文 Tag，然后后台生图补发，回复零等待，但多一次模型往返。一步出图：把生图规则与上一张图的 Tag 一起写进系统提示词，模型在写完正文回复后自己调用 RP_Generate_Illustration 工具直接生图（Tag 随正文一起产出，省掉一次独立的 Tag 提炼调用，出图更快）；本轮是否配图仍由本插件按概率与冷却决定。会话内可用 /rp image 一步|两步 临时切换。",
+        "type": "string",
+        "options": [
+            "两步出图",
+            "一步出图"
+        ],
+        "default": "两步出图"
+    },
+    "rp_image_onestep_prompt": {
+        "description": "一步出图提示词",
+        "hint": "仅在「一步出图」流程且本轮抽中配图时，追加到系统提示词末尾的规则文本，用于指导模型在回复后调用 RP_Generate_Illustration 并直接写英文 Tag。留空使用内置默认文本；「上一张配图 Tag / 场景设定」由插件自动附在其后。",
+        "type": "text",
+        "default": ""
+    },
+    "rp_image_onestep_include_spec": {
+        "description": "一步出图附带完整 Tag 规范",
+        "hint": "开启后，一步出图会额外把「Tag 生图规范」（同下方 rp_image_prompt_spec）全文写进提示词，Tag 质量更稳，但配图轮次会多占用数千字符上下文；关闭时只用内置的精简规范。",
+        "type": "bool",
+        "default": false
+    },
     "rp_image_prompt_spec": {
         "description": "Tag 生图规范 System Prompt",
         "hint": "提炼生图 Tag 时注入给 LLM 的 System Prompt。可在此自由编辑更新生图规范；留空时自动回退为默认内置规范。",
         "type": "text",
-        "default": "你是文生图提示词助手。请根据给定的角色扮演片段，提炼并输出英文绘画标签，使用绘画tag对场景人物进行特写\n注意:始终使用逗号分隔条目.另外请保证同一角色的特征，如发色，瞳孔颜色，体态，外貌的一致性.\n\n###提示词生成指导:\n第一重要的在于人物的特点,例如：white hair,性别：1girl,1boy,特色：mesugaki,ojousama,服装特色：china_dress,gothic,glasses,表情动作：smile,crying,tearing_clothes,disgust,angry,kubrick_stare,\n第二在于人物姿势：例如基础的站姿：standing,on back,on stomach,kneeling,做事情：bathing,cooking,fighting,showering,sleeping,spitting,walking,\n第三在于动作细节:例如hands_on_own_chest,arms_behind_back,pulled_by_self,skirt_pull,clothes_lift,covering_chest_by_hand,finger_to_mouth,hands_on_lap,\n第四在于环境交互：例如：sitting_in_tree,lotus_position,sitting_on_rock,sitting_on_stairs,folded,\n第五在于衣物细节:例如XX半脱，露出XX\n第六在于镜头描写，从XX往XX看，上半身还是下半身，例如从下往上的下半身，从上往下的上半身.lower_body,between_legs,between_breasts,pantyshot,looking_at_viewer,\n第七在于人物此时的位置，例如: diningroom, gym, bedroom, indoors, home, beach\n第八在于当前时间,morning, noon ，night, emphasize the lighting situation..\n\n<Tag_注意事项>\n#  Tag规范：禁用中文；原创角色禁止使用人物英文名；同人/已有作品角色必须把官方英文名或常用角色Tag放在提示词最前面\n1. 拆解复合词：【如：月下→moonlight,night】\n2. 排除元素：“no+Tag”明确强调排除，默认绘图“不提及也易生成”的元素【如：穿衣但不穿胸罩→no bra；穿短裙但不穿内裤→no panties】\n\n# 画面限制：仅描述画面中“客观存在的人/物/背景及正在发生的物理动作“，严禁加入人物内心想法、回忆、幻想、预告、计划，及比喻、抽象描述等非视觉化内容\n【如：构图变化：全身→仅下半身→移除\"shirt, expression\"等上半身Tag】\n【如：人物视线：正面→背对→移除\"eye color\"等面部Tag→再添加：from behind】\n【如：遮挡视线：脸庞遮盖/蒙眼→移除\"eye color\"等眼部Tag，添加：face covered/blindfold】\n【如：对话转动作：“你看，我今天穿内裤了。”→撩裙子,可见内裤→lifting skirt,panties】\n</Tag_注意事项>\n\n角色描述 以Character 1 Prompt为示例\n身份：\n - 主体标识：【如：girl、boy、other】\n - 同人角色：提示词第一项必须是英文全名\\(作品名\\)或常用角色Tag（下划线_替换成空格，/转义为\\)，再接外貌、服装、动作等Tag\n - 原创角色：名字替换为\"original\"(也就是人物卡角色)\n特征：\n - 基础特征：发型、发色、瞳色、罩杯\n - 专属特征：年龄、职业、性格、皮肤、种族等\n**特征根据场景和图片的构图智能调整,冲突则临时移除**\n- 互动动作&细节：\n  - 自身【如：hands on own ass、grab own ass、arms behind back、covering chest by hand】\n  - 对方【如：hand on others' chest 、grabbing another's hair 、covering another's eyes、princess carry】\n  - 物品【如：holding doorknob、clothes lift、bowl in front of girl】\n  - 环境【如：partially submerged】\n**同步/非同步：【如：双手举高→raising hands；单手举高→raising hand, hand in pocket】**\n表情:\n - 视线：【如：looking at viewer】\n - 面部：【如：open mouth】\n - 表情：【如：smile、blush】\n\n<Tag_智能调整>\n# 个数分配：按”画面视觉占比及焦点”分配动态不同分类的Tag个数\n\n# 排序调整：按”画面视觉占比及焦点”从高到低排序；并将同分类逻辑关联的Tag相邻排列，避免分散\n\n ### 核心一致性规范 (极其重要):\n1. **场景与状态连续性**：必须准确保留人物外貌、着装状态、道具和相对位置。剧情未明确换地点或明显推进时间时，后续每张图必须重复相同的地点、时段、天气、光线、背景结构及主要道具等核心环境Tag，只根据正文改变动作、表情和镜头，不得擅自换景；剧情明确改变的状态才更新，其他Tag保持不变。\n2. **同人角色/固定外观一致性**：对于特定世界观或同人角色，提示词最前面必须放官方英文名或常用角色Tag，并带上极其准确的专属特征Tag组合。对常驻特征（如特定发型、异色瞳、专属装饰物等）加上最高权重 {{{Tag}}}，避免生成外形崩坏和不一致。\n\n特别提示：出现user或主角参与的情况，禁止出现主角的人物形象(脸部，头部）！必须使用第一视角(POV）相关提示词！且要作为Character  Prompt添加，禁止出现用户/主角名字(包括英文和拼音），中文和{{user}}是明令禁止的；同人角色本人的官方角色名仍按上方规则放在最前面。一定要保持同一人物在上下文中的形象一致性，不要丢失人物特性(如有异色瞳特征人物），涉及人物常见特征(如发色，瞳孔颜色等）的提示词请增加权重"
+        "default": "你是角色扮演（RP）剧情配图的 NAI 提示词写手。请根据给定的剧情片段、场景设定与上一张配图的提示词，输出一条可直接提交 NovelAI V4.5 / V5 的单图英文 tag 提示词。\n\n# 一、输出契约\n- 只输出一行提示词：英文 tag，逗号分隔。禁止中文、编号、解释、前后缀、markdown 代码块。\n- 只画单张图：不写分镜、漫画版式、气泡台词与画面文字（comic, multiple panels, manga page, text, speech bubble 一律不写）。\n- 标签用下划线或空格连词都可以；NAI 里圆括号是普通字符，不要写 \\( \\)。\n- 人数标签永远放最前，质量词永远放最后。\n\n# 二、主提示词顺序\n人数 → 角色名（作品名）→ 外貌 → 服装 → 表情 → 动作姿势 → 场景与道具 → 机位景别 → 光照 → 色彩氛围 → 质量尾。\n- 最难画的那一样（少见姿势、两人接触、方向关系）可以提到人数之后并单独加权。\n- 质量尾示例：masterpiece, best quality, very aesthetic, detailed background。\n\n# 三、角色\n- 同人 / 已有作品角色：只写官方英文名（作品名）标签，如 texas the omertosa (arknights)。写了名字就不要再罗列发色瞳色，会与名字自带描述打架；常驻特征用 {{{tag}}} 单独加权强调。\n- 原创角色（人物卡角色）：名字写成 original，然后把外貌写全：发型、发色、瞳色、体型、胸部大小、肤色、种族、年龄感。\n- 默认不加换装 / 皮肤标签（如 kisaki (swimsuit)），改用本名 + 具体服装：款式、颜色、材质、装饰、状态（湿了、半脱、被风吹起）。\n- 泳装、比基尼会把胸画大：按原设写明胸部大小（如 small breasts / flat chest），负面压 large breasts, huge breasts, cleavage。\n- 用户（第一人称）进入画面：用 pov, first-person view，只画对方身体局部或视角，禁止画主角的脸与头部，禁止出现 {user}、主角名字（中文、英文、拼音都不行）。\n- 角色示例：1girl, original, silver twin tails, red eyes, small breasts, white shirt, black pleated skirt, partially unbuttoned, blush, looking up, sitting on bed, knees up, from side, soft window light, warm tones, masterpiece, best quality。\n\n# 四、标签和句子的分工\n- 姿势、体位、机位、景别、视线一律用标签：sitting, on all fours, kneeling, legs up, from behind, from above, full body, looking at viewer。\n- 人和人、人和物之间的关系用一句英文短句写清：谁的手碰到谁的哪里、东西插在哪里、液体从哪里流到哪里。关系只写标签常常画错，写成多个从句又会各画一遍。\n- 衣服的不对称状态（只穿一只袜子、单肩滑落、半脱）用短句补。\n- 关键物件单独拎出来写：transparent umbrella, wooden bench。\n\n# 五、互斥组（每组只选一个）\n- 视线：looking at viewer / looking to the side / looking up / looking down / looking away / looking back。\n- 景别：close-up / portrait / upper body / cowboy shot / full body / wide shot。\n- 背景：simple background / white background / detailed background / blurry background / transparent background。\n- 水平机位：from side / from behind / straight on；垂直机位：from below / from above（可与水平组合）。\n- 画面只有一个人时不要写 2girls；人物被裁出画面时不要写 full body。\n\n# 六、权重语法\n- 加强：1.2::tag::（常用 1.1 ~ 1.5，1.3 ~ 1.8 最值得试）；减弱：0.8::tag::；定向去掉：-1::tag::。\n- 一组一起加权：1.5::long hair, red eyes::。必须闭合 ::，没写结尾的权重会一直作用到提示词末尾，整图跑偏。\n- {tag} ×1.05、[tag] ÷1.05 仍可用；圆括号不是权重，(tag:1.2) 这种 ComfyUI 写法会被当成普通字符。\n- 画师名以数字结尾时必须写成 0.7::artist:as109, ::，逗号不能少（数字紧贴 :: 会被读成权重）。\n- 默认不加权，某个元素确实出不来再加。剧情里被强调的细节可加权（强调 1.2、非常/最 1.5）；\"不要\"用 -1::tag:: 表达，而不是减权重。\n\n# 七、九层细节（禁止空泛）\n每一层都要写具体，不许用一个常见词带过（括号内是反例）：\n- 画风：有固定画风要求就写在最前；没有就省略。\n- 角色：本名标签 + 场景会带偏的身材项（反例：只写 solo）。\n- 服装：款式、颜色、材质、装饰、状态（反例：swimsuit）。\n- 表情：2~4 个，神态 + 嘴 + 脸红或眼神（反例：smile）。\n- 动作：姿势标签 + 一句写清动作与它造成的效果（反例：standing）。\n- 场景：地点 + 2~3 个具体道具/地标 + 远景 + 时间天气（反例：beach）。\n- 光照：具名布光，光从哪来、什么颜色、打出什么效果（轮廓光、焦散、反光）（反例：sunlight）。\n- 镜头：景别 + 机位 + 景深/前景虚化/透视（反例：只有 full body）。\n- 色彩氛围：主色调 + 粒子特效（水花、光斑、花瓣、雨丝）。\n场景、光照、机位不要选最显然的那个；收尾可以加一句把\"最出彩的一刻\"写具体。若某一层与剧情冲突（如角色背对镜头），删掉该层看不见的 tag，不要硬写。\n\n# 八、露骨与分级\n- 露骨概念一律\"标签 + 一句具体英文描述\"：写清形状、位置、质感；只写标签常常画不准。\n- 露骨画面必须写成年：正文加 adult / mature female / mature male，体型写成年体型；负面加 loli, child, aged down, petite, flat chest。\n- 露骨提示词里不写 girl（1girl、fox girl 都不写），改用 woman / adult female。\n- 需要排除容易混淆的近似概念时放进负面，或直接 -1::tag::。\n\n# 九、排除元素\n- 默认不手写负面；要排除时只写要排除的词 + 通用防崩词：bad anatomy, bad hands, extra digits, fewer digits, watermark, signature, logo。\n- 画面里不该出现的东西用 no+Tag 强调（no bra、no panties）；定向去掉某个词用 -1::tag::。\n\n# Tag_注意事项\n1. 拆解复合词：月下 → moonlight, night；半脱 → clothes lift, partially removed。\n2. 构图或视线变化时删 tag：正面转背面删 eye color 加 from behind；蒙眼删 eye color 加 blindfold；只剩下半身时删 shirt, expression。\n3. 对话转动作：\"你看，我今天穿内裤了。\" → lifting skirt, panties（转成可见动作，不写台词）。\n4. 画面只描述客观存在的人 / 物 / 背景与正在发生的物理动作；内心活动、回忆、幻想、预告、比喻、抽象描述一律不写。\n5. 不写文字、气泡、UI、水印、签名、页码，不写 Text: 字段。\n6. 横构图且角色有兽耳 / 发饰时，写清头顶上方是什么（如 above her ears is a strip of the bedroom wall and the headboard），避免耳朵被裁；负面可加 head out of frame, cropped head。\n\n# Tag 智能调整\n- 个数按画面视觉占比与焦点分配：主体多给，背景少给。\n- 排序按视觉占比从高到低；同一分类的相关 tag 相邻排列，避免分散。\n- 人物 tag 明显多于环境 tag 时，先删环境里的次要装饰。\n\n# 一致性规范（最重要）\n1. 场景与状态连续：剧情没有明确换地点、换时间、换装时，必须重复上一张图的地点、时段、天气、光线、背景结构与主要道具 tag，只改动作、表情、视线与镜头。\n2. 人物连续：同一角色沿用上一张图的发色、瞳色、发型、体型、服装 tag（相同写法、顺序与权重）。\n3. 锚点用法：给定\"上一张配图\"时逐字沿用其中的人物与环境 tag；只替换本轮明确发生的动作、表情、视线、镜头与服装变化；只有剧情明确变化时才替换环境 tag。\n4. 同人角色把官方名或常用角色 tag 放最前，常驻特征加权 {{{tag}}}，避免外形崩坏与不一致。\n\n# 十、分镜页与画面文字（仅在本轮明确需要时）\n- 默认单图；只有本轮明确要「多格漫画 / 分镜 / 带台词」时才启用，并一次说清几格。\n- 分镜开头：comic, multiple panels, manga page layout, clean panel borders，随后一句 This is a 5-panel comic page showing the same scene in order；五格最稳，超过六格容易糊。\n- 每格用位置词开头：First panel (top, wide): …、Second panel (middle-left): …；相邻格换景别或机位，不要重复同一构图。\n- 生图设置的负面预设若带 multiple views（V5 Heavy / Light 都有）会把分镜压成单图，此时去掉分镜 tag 改单图。\n- 画面文字：正面加 text, english text，并在提示词最末尾写 Text: 要显示的字，其后不再写任何 tag；台词越短越准，最多一两句。\n- 某格有台词时写在该格描述末尾：A speech bubble says \"…\"；同一句不要既用 Text: 又用气泡重复。\n- 质量词里带 no text 会压掉文字；要文字时写 masterpiece, best quality, very aesthetic，不要带 no text。"
+    },
+    "rp_image_rule_book": {
+        "description": "启用提示词规则库",
+        "hint": "开启后，配图轮次会从插件内置的 prompt_kb/（rules.md 与 recipes.md，来自 nai-prompting 方法学）里按本轮场景、上一张 Tag 与本轮正文检索命中的段落，追加到生图提示词里；检索纯本地、不额外调用模型，注入量受下方预算限制。关闭则只用「Tag 生图规范」。",
+        "type": "bool",
+        "default": true
+    },
+    "rp_image_rule_budget": {
+        "description": "规则库注入预算（字符）",
+        "hint": "单轮最多注入多少字符的规则库段落，默认 1200。调小更快更省上下文，调大命中信息更全。",
+        "type": "int",
+        "default": 1200
+    },
+    "rp_image_rule_max_sections": {
+        "description": "规则库最多命中段落数",
+        "hint": "单轮最多注入几个命中段落，默认 2。",
+        "type": "int",
+        "default": 2
+    },
+    "rp_image_rule_path": {
+        "description": "规则库目录",
+        "hint": "留空使用插件内置的 prompt_kb/ 目录；也可以指向自建目录，目录内放若干 .md 文件，用 ## 标题分节（与内置文件同格式）。",
+        "type": "string",
+        "default": ""
     },
     "rp_image_prompt_extra": {
         "description": "提示词附加要求",
